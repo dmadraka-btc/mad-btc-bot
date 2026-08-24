@@ -1,0 +1,3 @@
+.env
+madbot.db
+__pycache__/
