@@ -14,9 +14,6 @@ from telegram.ext import (
     MessageHandler, PreCheckoutQueryHandler, ContextTypes, filters
 )
 
-# ===========================================
-# 1. CONFIG - READS FROM.env / RAILWAY
-# ===========================================
 TOKEN_NAME = "$MBTC"
 TOKEN_FULL_NAME = "MAD BTC"
 BOT_NAME = "MAD BOT"
@@ -27,7 +24,6 @@ YANDEX_API_KEY = os.environ.get("YANDEX_API_KEY", "")
 YANDEX_FOLDER_ID = os.environ.get("YANDEX_FOLDER_ID", "")
 DB_PATH = "madbot.db"
 
-# PRICING
 STARS_PER_MBTC = 100000
 TON_PER_MBTC = 0.01
 ETH_PER_MBTC = 0.000002
@@ -39,7 +35,6 @@ DAILY_REWARD = 0.001
 TASK_REWARD = 0.01
 REF_BONUS = 0.05
 
-# YOUR WALLETS
 WALLETS = {
     "TON": "UQB4iAkAt7F8nsajNOulyWZjNVewIUgoVTbxjIDkC1-G_GoO",
     "BTC": "bc1qvqa2zn7fdajmcvvj0q0khvm3ye7fndvjhuhhrp",
@@ -251,7 +246,7 @@ def main():
     app.add_handler(PreCheckoutQueryHandler(precheckout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     logger.info("MAD BOT RUNNING...")
-    app.run_polling()
+    app.run_polling(allowed_updates=Update.ALL_TYPES) # FIXED LINE
 
 if __name__ == "__main__":
     main()
