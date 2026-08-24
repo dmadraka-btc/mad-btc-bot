@@ -1,12 +1,13 @@
-from dotenv import load_dotenv
-load_dotenv()
-
 import os
 import sqlite3
 import logging
 import asyncio
 from datetime import datetime, timezone, timedelta
 from contextlib import closing
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -14,14 +15,15 @@ from telegram.ext import (
     MessageHandler, PreCheckoutQueryHandler, ContextTypes, filters
 )
 
+# ========= CONFIG =========
 TOKEN_NAME = "$MBTC"
 TOKEN_FULL_NAME = "MAD BTC"
 BOT_NAME = "MAD BOT"
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
-YANDEX_API_KEY = os.environ.get("YANDEX_API_KEY", "")
-YANDEX_FOLDER_ID = os.environ.get("YANDEX_FOLDER_ID", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+YANDEX_API_KEY = os.getenv("YANDEX_API_KEY", "")
+YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID", "")
 DB_PATH = "madbot.db"
 
 STARS_PER_MBTC = 100000
@@ -53,17 +55,13 @@ logger = logging.getLogger(__name__)
 
 DB = sqlite3.connect(DB_PATH, check_same_thread=False)
 
+# ========= DATABASE =========
 def init_db():
     with closing(DB.cursor()) as c:
         c.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, mbtc_balance REAL DEFAULT 0, referrer_id INTEGER, joined_at TEXT)")
         c.execute("CREATE TABLE IF NOT EXISTS purchases (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, method TEXT, amount REAL, status TEXT, time TEXT)")
         c.execute("CREATE TABLE IF NOT EXISTS tasks (user_id INTEGER PRIMARY KEY, daily_last_claim TEXT, joined_channel INTEGER DEFAULT 0)")
     DB.commit()
-
-def get_user(user_id):
-    with closing(DB.cursor()) as c:
-        c.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
-        return c.fetchone()
 
 def add_user(user_id, username, referrer_id=None):
     with closing(DB.cursor()) as c:
@@ -89,6 +87,7 @@ def get_all_users():
         c.execute("SELECT user_id FROM users")
         return [row[0] for row in c.fetchall()]
 
+# ========= HANDLERS =========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     referrer = None
@@ -96,7 +95,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try: referrer = int(context.args[0].replace("ref", ""))
         except: pass
     add_user(user.id, user.username, referrer)
-    text = f"🚀 Welcome to {TOKEN_FULL_NAME}\n\nBuy {TOKEN_NAME} with 7 methods:\n⭐ Stars | 💎 TON | ₿ BTC | 🔷 ETH | 🟡 BNB | 🔵 ARB | 🟣 SOL | 🔴 TRX\nUse /buy to start\nUse /ref to earn 5% from referrals"
+    
+    text = (
+        f"🚀 Welcome to {TOKEN_FULL_NAME}\n\n"
+        f"Buy {TOKEN_NAME} with 8 methods:\n"
+        f"⭐ Stars | 💎 TON | ₿ BTC | 🔷 ETH | 🟡 BNB | 🔵 ARB | 🟣 SOL | 🔴 TRX\n\n"
+        f"/buy - Buy tokens\n"
+        f"/balance - Check balance\n"
+        f"/ref - Get referral link\n"
+        f"/daily - Daily reward\n"
+        f"/tasks - Complete tasks"
+    )
     await update.message.reply_text(text)
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -138,7 +147,7 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with closing(DB.cursor()) as c:
         c.execute("UPDATE tasks SET daily_last_claim=? WHERE user_id=?", (datetime.now(timezone.utc).isoformat(), user_id))
     DB.commit()
-    await update.message.reply_text(f"✅ Claimed {DAILY_REWARD} {TOKEN_NAME}! Use /daily again in 24h")
+    await update.message.reply_text(f"✅ Claimed {DAILY_REWARD} {TOKEN_NAME}! Come back in 24h")
 
 async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"📋 TASKS:\n1. Join {CHANNEL} - Reward: {TASK_REWARD} {TOKEN_NAME}\n\nAfter joining use /verify"
@@ -179,7 +188,7 @@ async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with closing(DB.cursor()) as c:
         c.execute("SELECT COUNT(*), SUM(mbtc_balance) FROM users")
         count, total = c.fetchone()
-    await update.message.reply_text(f"👥 Total Users: {count}\n💰 Total {TOKEN_NAME}: {total:.4f}")
+    await update.message.reply_text(f"👥 Total Users: {count}\n💰 Total {TOKEN_NAME}: {total or 0:.4f}")
 
 async def announce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id!= ADMIN_ID: return
@@ -220,17 +229,24 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     amount = update.message.successful_payment.total_amount / 100
     mbtc = amount / STARS_PER_MBTC
     add_balance(user_id, mbtc)
-    user = get_user(user_id)
-    if user and user[3]:
+    with closing(DB.cursor()) as c:
+        c.execute("SELECT referrer_id FROM users WHERE user_id=?", (user_id,))
+        ref_id = c.fetchone()[0]
+    if ref_id:
         ref_bonus = mbtc * REF_BONUS
-        add_balance(user[3], ref_bonus)
-        try: await context.bot.send_message(user[3], f"🎉 Referral bonus! +{ref_bonus:.4f} {TOKEN_NAME}")
+        add_balance(ref_id, ref_bonus)
+        try: await context.bot.send_message(ref_id, f"🎉 Referral bonus! +{ref_bonus:.4f} {TOKEN_NAME}")
         except: pass
     await update.message.reply_text(f"✅ Paid with Stars!\nYou received: {mbtc:.4f} {TOKEN_NAME}\nNew Balance: {get_balance(user_id):.4f}")
 
+# ========= MAIN =========
 def main():
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN not set!")
+        return
     init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("buy", buy))
     app.add_handler(CommandHandler("balance", balance))
@@ -245,8 +261,9 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(PreCheckoutQueryHandler(precheckout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    
     logger.info("MAD BOT RUNNING...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES) # FIXED LINE
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
