@@ -11,22 +11,16 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandle
 
 # ========= CONFIG =========
 TOKEN_NAME = "$MBTC"
-TOKEN_FULL_NAME = "MAD BTC"
+TOKEN_FULL_NAME = "MAD BTC - MAKING A DIFFERENCE"
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 NOWPAY_API_KEY = os.getenv("NOWPAY_API_KEY")
 NOWPAY_IPN_SECRET = os.getenv("NOWPAY_IPN_SECRET")
 
-# PRICING - FOREIGN PRICING ONLY
-STARS_PER_MBTC = 10 # 10 Stars = 1 $MBTC = $0.10
-TON_PER_MBTC = 0.0001 # 0.0001 TON = 1 $MBTC = $0.10
-BTC_USD = 0.10 # 1 $MBTC = $0.10
-ETH_PER_MBTC = 0.00006 # ~$0.10
-BNB_PER_MBTC = 0.0004 # ~$0.10
-SOL_PER_MBTC = 0.0008 # ~$0.10
-TRX_PER_MBTC = 0.001 # ~$0.10
-REF_BONUS = 0.05 # 5%
+# PRICING
+PRICE_1 = 0.10; PRICE_10 = 0.90; PRICE_50 = 4.00; PRICE_100 = 7.00
+STARS_PER_MBTC = 10; TON_PER_MBTC = 0.0001; REF_BONUS = 0.05; FEE = 0.02
 
 WALLETS = {"TON": "UQB4iAkAt7F8nsajNOulyWZjNVewIUgoVTbxjIDkC1-G_GoO", "BTC": "bc1qvqa2zn7fdajmcvvj0q0khvm3ye7fndvjhuhhrp", "ETH": "0x10fc9e08494f983B86260579024d77E918A528b2", "BNB": "0x10fc9e08494f983B86260579024d77E918A528b2", "ARB": "0x10fc9e08494f983B86260579024d77E918A528b2", "SOL": "4wpHps8ZsfksZHsXUMDLyHKJ2wuq2oLM23TRc7c1SDEF", "TRX": "TLhtTks9ihyqiokftm3H6E74BoXAkWSxVU"}
 CHANNEL_ID = -1002764321871
@@ -39,99 +33,114 @@ app_flask = Flask(__name__)
 def get_db(): return psycopg2.connect(DATABASE_URL, sslmode='require')
 def init_db():
     with closing(get_db().cursor()) as c:
-        c.execute("CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username TEXT, mbtc_balance REAL DEFAULT 0, referrer_id BIGINT, joined_at TEXT)")
-        c.execute("CREATE TABLE IF NOT EXISTS purchases (id SERIAL PRIMARY KEY, user_id BIGINT, method TEXT, amount REAL, status TEXT, time TEXT)")
+        c.execute("CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username TEXT, mbtc_balance REAL DEFAULT 0, usd_balance REAL DEFAULT 0, referrer_id BIGINT, joined_at TEXT)")
+        c.execute("CREATE TABLE IF NOT EXISTS purchases (id SERIAL PRIMARY KEY, user_id BIGINT, method TEXT, amount REAL, price_usd REAL, status TEXT, time TEXT)")
+        c.execute("CREATE TABLE IF NOT EXISTS market (id SERIAL PRIMARY KEY, seller_id BIGINT, amount REAL, price_per_mbtc REAL, status TEXT DEFAULT 'OPEN', time TEXT)")
     get_db().commit()
 
 def add_user(user_id, username, referrer_id=None):
-    with closing(get_db().cursor()) as c:
-        c.execute("INSERT INTO users (user_id, username, referrer_id, joined_at) VALUES (%s,%s,%s,%s) ON CONFLICT (user_id) DO NOTHING",(user_id, username, referrer_id, datetime.now(timezone.utc).isoformat()))
+    with closing(get_db().cursor()) as c: c.execute("INSERT INTO users (user_id, username, referrer_id, joined_at) VALUES (%s,%s,%s,%s) ON CONFLICT (user_id) DO NOTHING",(user_id, username, referrer_id, datetime.now(timezone.utc).isoformat()))
     get_db().commit()
 
-def get_balance(user_id):
-    with closing(get_db().cursor()) as c: c.execute("SELECT mbtc_balance FROM users WHERE user_id=%s", (user_id,)); res = c.fetchone(); return res[0] if res else 0
+def get_user(user_id):
+    with closing(get_db().cursor()) as c: c.execute("SELECT mbtc_balance, usd_balance FROM users WHERE user_id=%s", (user_id,)); return c.fetchone() or (0,0)
 
-def add_balance(user_id, amount, method="SYSTEM", context=None):
+def add_balance(user_id, mbtc=0, usd=0, method="SYSTEM", context=None):
     conn = get_db()
     with closing(conn.cursor()) as c:
         c.execute("INSERT INTO users (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING", (user_id,))
-        c.execute("UPDATE users SET mbtc_balance = mbtc_balance + %s WHERE user_id=%s", (amount, user_id))
-        c.execute("INSERT INTO purchases (user_id, method, amount, status, time) VALUES (%s,%s,%s,%s,%s)",(user_id, method, amount, "SUCCESS", datetime.now(timezone.utc).isoformat()))
-        c.execute("SELECT referrer_id FROM users WHERE user_id=%s", (user_id,)); ref = c.fetchone()
-        if ref and ref[0] and method!= "SYSTEM": c.execute("UPDATE users SET mbtc_balance = mbtc_balance + %s WHERE user_id=%s", (amount * REF_BONUS, ref[0]))
+        if mbtc!= 0: c.execute("UPDATE users SET mbtc_balance = mbtc_balance + %s WHERE user_id=%s", (mbtc, user_id))
+        if usd!= 0: c.execute("UPDATE users SET usd_balance = usd_balance + %s WHERE user_id=%s", (usd, user_id))
+        if method!= "SYSTEM": c.execute("INSERT INTO purchases (user_id, method, amount, price_usd, status, time) VALUES (%s,%s,%s,%s,%s,%s)",(user_id, method, mbtc, usd, "SUCCESS", datetime.now(timezone.utc).isoformat()))
+        if method!= "SYSTEM" and context: asyncio.run(announce_purchase(context, user_id, mbtc, method))
     conn.commit()
-    if method!= "SYSTEM" and context: asyncio.run(announce_purchase(context, user_id, amount, method))
+
+def create_sell_order(seller_id, amount, price):
+    with closing(get_db().cursor()) as c:
+        c.execute("UPDATE users SET mbtc_balance = mbtc_balance - %s WHERE user_id=%s AND mbtc_balance >= %s", (amount, seller_id, amount))
+        if c.rowcount == 0: return False
+        c.execute("INSERT INTO market (seller_id, amount, price_per_mbtc, time) VALUES (%s,%s,%s,%s)", (seller_id, amount, price, datetime.now(timezone.utc).isoformat()))
+    get_db().commit(); return True
+
+def buy_from_market(buyer_id, order_id):
+    conn = get_db()
+    with closing(conn.cursor()) as c:
+        c.execute("SELECT seller_id, amount, price_per_mbtc FROM market WHERE id=%s AND status='OPEN'", (order_id,)); order = c.fetchone()
+        if not order: return "Order not found"
+        seller_id, amount, price = order; total_cost = amount * price; fee = total_cost * FEE; seller_gets = total_cost - fee
+        c.execute("SELECT usd_balance FROM users WHERE user_id=%s", (buyer_id,)); bal = c.fetchone()[0]
+        if bal < total_cost: return "Insufficient USD balance"
+        c.execute("UPDATE users SET usd_balance = usd_balance - %s WHERE user_id=%s", (total_cost, buyer_id))
+        c.execute("UPDATE users SET mbtc_balance = mbtc_balance + %s WHERE user_id=%s", (amount, buyer_id))
+        c.execute("UPDATE users SET usd_balance = usd_balance + %s WHERE user_id=%s", (seller_gets, seller_id))
+        c.execute("UPDATE users SET usd_balance = usd_balance + %s WHERE user_id=%s", (fee, ADMIN_ID))
+        c.execute("UPDATE market SET status='SOLD' WHERE id=%s", (order_id,))
+    conn.commit(); return "SUCCESS - Tokens Delivered!"
 
 async def announce_purchase(context, user_id, amount, method):
-    try:
-        user = await context.bot.get_chat(user_id); name = f"@{user.username}" if user.username else user.first_name
-        await context.bot.send_message(chat_id=CHANNEL_ID, text=f"🎉 NEW BUYER!\n\n{name} bought {amount:.4f} {TOKEN_NAME}\nPayment: {method.upper()}\n\nJoin: https://t.me/{BOT_USERNAME}")
+    try: user = await context.bot.get_chat(user_id); name = f"@{user.username}" if user.username else user.first_name; await context.bot.send_message(chat_id=CHANNEL_ID, text=f"🎉 NEW BUYER!\n\n{name} bought {amount:.2f} {TOKEN_NAME}\nPayment: {method.upper()}\n\nJoin: https://t.me/{BOT_USERNAME}")
     except Exception as e: logger.error(f"Announce failed: {e}")
 
-# ========= NOWPAYMENTS =========
 def create_nowpay_invoice(price_amount, price_currency, order_id, pay_currency):
-    url = "https://api.nowpayments.io/v1/invoice"
-    domain = os.getenv('RAILWAY_PUBLIC_DOMAIN', 'localhost')
+    url = "https://api.nowpayments.io/v1/invoice"; domain = os.getenv('RAILWAY_PUBLIC_DOMAIN', 'localhost')
     payload = {"price_amount": price_amount, "price_currency": price_currency, "pay_currency": pay_currency, "order_id": order_id, "ipn_callback_url": f"https://{domain}/ipn"}
     headers = {"x-api-key": NOWPAY_API_KEY}
     try: return requests.post(url, json=payload, headers=headers, timeout=10).json()
     except Exception as e: logger.error(f"NOWPAY ERROR: {e}"); return {}
 
-# ========= IPN - AUTO CREDIT =========
 @app_flask.route('/ipn', methods=['POST'])
 def ipn():
-    data = request.get_json()
-    received_hmac = request.headers.get('x-nowpayments-sig')
-    sorted_data = json.dumps(data, separators=(',', ':'), sort_keys=True)
-    generated_hmac = hashlib.sha512((sorted_data + NOWPAY_IPN_SECRET).encode()).hexdigest()
+    data = request.get_json(); received_hmac = request.headers.get('x-nowpayments-sig')
+    sorted_data = json.dumps(data, separators=(',', ':'), sort_keys=True); generated_hmac = hashlib.sha512((sorted_data + NOWPAY_IPN_SECRET).encode()).hexdigest()
     if received_hmac!= generated_hmac: return 'Invalid signature', 400
     if data.get('payment_status') == 'finished':
-        user_id = int(data.get('order_id').split('_')[-1])
-        add_balance(user_id, 1, method=data.get('pay_currency'))
+        parts = data.get('order_id').split('_'); user_id = int(parts[-1]); amount = float(parts[-2]); add_balance(user_id, mbtc=amount, usd=amount*PRICE_1, method=data.get('pay_currency'))
     return 'ok', 200
 
 # ========= TELEGRAM HANDLERS =========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user; referrer = int(context.args[0].replace("ref", "")) if context.args and context.args[0].startswith("ref") else None
-    add_user(user.id, user.username, referrer)
-    await update.message.reply_text(f"🚀 Welcome to {TOKEN_FULL_NAME}\n\nPre-Sale: 1 {TOKEN_NAME} = $0.10\nWhen listed: 1 {TOKEN_NAME} = $1.00\n\n/buy - Buy {TOKEN_NAME}\n/balance - Check Balance\n/ref - Your Referral Link")
+    user = update.effective_user; referrer = int(context.args[0].replace("ref", "")) if context.args and context.args[0].startswith("ref") else None; add_user(user.id, user.username, referrer)
+    await update.message.reply_text(f"🚀 Welcome to {TOKEN_FULL_NAME}\n\nPre-Sale: 1 {TOKEN_NAME} = $0.10\nBulk: 100 for $7\n\nCommands:\n/buy - Buy from Bot\n/market - P2P Market\n/sell - Sell your $MBTC\n/send - Send to friend\n/balance - Check Balance\n/ref - Referral Link")
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton(f"⭐ Stars - {STARS_PER_MBTC}", callback_data="buy_stars")],
-        [InlineKeyboardButton(f"💎 TON - {TON_PER_MBTC}", callback_data="buy_ton")],
-        [InlineKeyboardButton(f"₿ BTC - ${BTC_USD}", callback_data="buy_btc")],
-        [InlineKeyboardButton(f"💵 USDT - ${BTC_USD}", callback_data="buy_usdt")],
-        [InlineKeyboardButton(f"🔷 ETH - {ETH_PER_MBTC}", callback_data="buy_eth")],
-        [InlineKeyboardButton(f"🟡 BNB - {BNB_PER_MBTC}", callback_data="buy_bnb")],
-        [InlineKeyboardButton(f"◎ SOL - {SOL_PER_MBTC}", callback_data="buy_sol")],
-        [InlineKeyboardButton(f"🔺 TRX - {TRX_PER_MBTC}", callback_data="buy_trx")]
-    ]
-    await update.message.reply_text(f"Choose payment for 1 {TOKEN_NAME}:", reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard = [[InlineKeyboardButton(f"1 {TOKEN_NAME} - $0.10", callback_data="buy_1")],[InlineKeyboardButton(f"10 {TOKEN_NAME} - $0.90", callback_data="buy_10")],[InlineKeyboardButton(f"50 {TOKEN_NAME} - $4.00", callback_data="buy_50")],[InlineKeyboardButton(f"100 {TOKEN_NAME} - $7.00 🔥", callback_data="buy_100")],[InlineKeyboardButton(f"Pay with Crypto", callback_data="buy_crypto")]]
+    await update.message.reply_text(f"Buy {TOKEN_NAME} from Bot:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text(f"💰 Your {TOKEN_NAME} Balance: {get_balance(update.effective_user.id):.4f}")
+async def market(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    with closing(get_db().cursor()) as c: c.execute("SELECT id, amount, price_per_mbtc FROM market WHERE status='OPEN' LIMIT 10"); orders = c.fetchall()
+    if not orders: await update.message.reply_text("Market is empty. Use /sell to list yours")
+    else: text = "📊 P2P MARKET\n" + "\n".join([f"ID:{o[0]} | {o[1]} {TOKEN_NAME} @ ${o[2]:.3f} each" for o in orders]) + "\n\nTo buy: /buyorder ID"; await update.message.reply_text(text)
 
-async def ref(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text(f"🔗 Your Referral Link:\nhttps://t.me/{BOT_USERNAME}?start=ref{update.effective_user.id}\n\nEarn 5% of every referral's purchase!")
+async def sell(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try: amount = float(context.args[0]); price = float(context.args[1]); msg = "✅ Listed!" if create_sell_order(update.effective_user.id, amount, price) else "❌ Insufficient $MBTC"; await update.message.reply_text(msg)
+    except: await update.message.reply_text("Usage: /sell 100 0.12")
+
+async def buyorder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try: result = buy_from_market(update.effective_user.id, int(context.args[0])); await update.message.reply_text(result)
+    except: await update.message.reply_text("Usage: /buyorder 5")
+
+async def send_tokens(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try: amount = float(context.args[1]); conn = get_db();
+    except: await update.message.reply_text("Usage: /send @username 10"); return
+
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE): bal = get_user(update.effective_user.id); await update.message.reply_text(f"💰 Balance:\n{bal[0]:.4f} {TOKEN_NAME}\n${bal[1]:.2f} USD")
+
+async def ref(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text(f"🔗 Your Link:\nhttps://t.me/{BOT_USERNAME}?start=ref{update.effective_user.id}\n\nEarn 5% of every referral's purchase!")
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; user_id = query.from_user.id; await query.answer()
-    prices = {"buy_ton": ("ton", TON_PER_MBTC), "buy_btc": ("btc", BTC_USD), "buy_usdt": ("usdt", BTC_USD), "buy_eth": ("eth", ETH_PER_MBTC), "buy_bnb": ("bnb", BNB_PER_MBTC), "buy_sol": ("sol", SOL_PER_MBTC), "buy_trx": ("trx", TRX_PER_MBTC)}
-    if query.data == "buy_stars": await context.bot.send_invoice(user_id, f"Buy 1 {TOKEN_NAME}", "1 $MBTC", "buy_mbtc_stars", "", "XTR", [LabeledPrice(TOKEN_NAME, STARS_PER_MBTC * 100)])
-    elif query.data in prices:
-        coin, amount = prices[query.data]
-        invoice = create_nowpay_invoice(BTC_USD, "USD", f"mbtc_{coin}_{user_id}", coin)
-        await query.message.reply_text(f"Pay here:\n{invoice.get('invoice_url')}")
+    packs = {"buy_1":(1,PRICE_1),"buy_10":(10,PRICE_10),"buy_50":(50,PRICE_50),"buy_100":(100,PRICE_100)}
+    if query.data in packs: amount, price = packs[query.data]; invoice = create_nowpay_invoice(price, "USD", f"mbtc_{amount}_{user_id}", "ton"); await query.message.reply_text(f"Pay here:\n{invoice.get('invoice_url')}")
+    elif query.data == "buy_crypto": await query.message.reply_text("TON, BTC, ETH, BNB, SOL, USDT, TRX coming. Use buttons above for now.")
 
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    mbtc = (update.message.successful_payment.total_amount / 100) / STARS_PER_MBTC
-    add_balance(update.message.from_user.id, mbtc, method="STARS", context=context)
-    await update.message.reply_text(f"✅ Payment Received!\nYou got: {mbtc:.4f} {TOKEN_NAME}")
+    mbtc = (update.message.successful_payment.total_amount / 100) / STARS_PER_MBTC; add_balance(update.message.from_user.id, mbtc=mbtc, usd=mbtc*PRICE_1, method="STARS", context=context); await update.message.reply_text(f"✅ Payment Received!\nYou got: {mbtc:.2f} {TOKEN_NAME}")
 
 def run_flask(): app_flask.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
 def main():
     init_db(); Thread(target=run_flask).start()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start)); app.add_handler(CommandHandler("buy", buy)); app.add_handler(CommandHandler("balance", balance)); app.add_handler(CommandHandler("ref", ref))
+    app.add_handler(CommandHandler("start", start)); app.add_handler(CommandHandler("buy", buy)); app.add_handler(CommandHandler("market", market)); app.add_handler(CommandHandler("sell", sell)); app.add_handler(CommandHandler("buyorder", buyorder)); app.add_handler(CommandHandler("send", send_tokens)); app.add_handler(CommandHandler("balance", balance)); app.add_handler(CommandHandler("ref", ref))
     app.add_handler(CallbackQueryHandler(callback_handler)); app.add_handler(PreCheckoutQueryHandler(lambda u,c: u.pre_checkout_query.answer(ok=True))); app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.run_polling(drop_pending_updates=True)
 if __name__ == "__main__": main()
