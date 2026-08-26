@@ -1,6 +1,5 @@
 import os, logging, asyncio, psycopg, requests, hashlib, json
 from datetime import datetime, timezone
-from contextlib import closing
 from threading import Thread
 from dotenv import load_dotenv
 from flask import Flask, request
@@ -34,11 +33,14 @@ app_flask = Flask(__name__)
 
 # ========= YANDEX TRANSLATE =========
 def yandex_translate(text, target_lang="en"):
+    if not YANDEX_API_KEY or not YANDEX_FOLDER_ID:
+        return "Yandex not configured"
     url = "https://translate.api.cloud.yandex.net/translate/v2/translate"
     headers = {"Authorization": f"Api-Key {YANDEX_API_KEY}"}
     body = {"targetLanguageCode": target_lang, "texts": [text], "folderId": YANDEX_FOLDER_ID}
     try:
         res = requests.post(url, headers=headers, json=body, timeout=10)
+        res.raise_for_status()
         return res.json()["translations"][0]["text"]
     except Exception as e:
         logger.error(f"YANDEX ERROR: {e}")
@@ -46,75 +48,66 @@ def yandex_translate(text, target_lang="en"):
 
 # ========= DATABASE =========
 def get_db():
-    return psycopg.connect(DATABASE_URL)
+    return psycopg.connect(DATABASE_URL, autocommit=False)
 
 def init_db():
-    conn = get_db()
-    with conn.cursor() as c:
-        c.execute("CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username TEXT, mbtc_balance REAL DEFAULT 0, usd_balance REAL DEFAULT 0, referrer_id BIGINT, joined_at TEXT, lang TEXT DEFAULT 'en')")
-        c.execute("CREATE TABLE IF NOT EXISTS purchases (id SERIAL PRIMARY KEY, user_id BIGINT, method TEXT, amount REAL, price_usd REAL, status TEXT, time TEXT)")
-        c.execute("CREATE TABLE IF NOT EXISTS market (id SERIAL PRIMARY KEY, seller_id BIGINT, amount REAL, price_per_mbtc REAL, status TEXT DEFAULT 'OPEN', time TEXT)")
-    conn.commit()
-    conn.close()
+    with get_db() as conn:
+        with conn.cursor() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username TEXT, mbtc_balance REAL DEFAULT 0, usd_balance REAL DEFAULT 0, referrer_id BIGINT, joined_at TEXT, lang TEXT DEFAULT 'en')")
+            c.execute("CREATE TABLE IF NOT EXISTS purchases (id SERIAL PRIMARY KEY, user_id BIGINT, method TEXT, amount REAL, price_usd REAL, status TEXT, time TEXT)")
+            c.execute("CREATE TABLE IF NOT EXISTS market (id SERIAL PRIMARY KEY, seller_id BIGINT, amount REAL, price_per_mbtc REAL, status TEXT DEFAULT 'OPEN', time TEXT)")
+        conn.commit()
 
 def add_user(user_id, username, referrer_id=None):
-    conn = get_db()
-    with conn.cursor() as c:
-        c.execute("INSERT INTO users (user_id, username, referrer_id, joined_at) VALUES (%s,%s,%s,%s) ON CONFLICT (user_id) DO NOTHING",(user_id, username, referrer_id, datetime.now(timezone.utc).isoformat()))
-    conn.commit()
-    conn.close()
+    with get_db() as conn:
+        with conn.cursor() as c:
+            c.execute("INSERT INTO users (user_id, username, referrer_id, joined_at) VALUES (%s,%s,%s,%s) ON CONFLICT (user_id) DO NOTHING",(user_id, username, referrer_id, datetime.now(timezone.utc).isoformat()))
+        conn.commit()
 
 def get_user(user_id):
-    conn = get_db()
-    with conn.cursor() as c:
-        c.execute("SELECT mbtc_balance, usd_balance FROM users WHERE user_id=%s", (user_id,))
-        res = c.fetchone() or (0,0)
-    conn.close()
+    with get_db() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT mbtc_balance, usd_balance FROM users WHERE user_id=%s", (user_id,))
+            res = c.fetchone() or (0,0)
     return res
 
 def add_balance(user_id, mbtc=0, usd=0, method="SYSTEM", context=None):
-    conn = get_db()
-    with conn.cursor() as c:
-        c.execute("INSERT INTO users (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING", (user_id,))
-        if mbtc!= 0: c.execute("UPDATE users SET mbtc_balance = mbtc_balance + %s WHERE user_id=%s", (mbtc, user_id))
-        if usd!= 0: c.execute("UPDATE users SET usd_balance = usd_balance + %s WHERE user_id=%s", (usd, user_id))
-        if method!= "SYSTEM": c.execute("INSERT INTO purchases (user_id, method, amount, price_usd, status, time) VALUES (%s,%s,%s,%s,%s,%s)",(user_id, method, mbtc, usd, "SUCCESS", datetime.now(timezone.utc).isoformat()))
-    conn.commit()
-    conn.close()
+    with get_db() as conn:
+        with conn.cursor() as c:
+            c.execute("INSERT INTO users (user_id) VALUES (%s) ON CONFLICT (user_id) DO NOTHING", (user_id,))
+            if mbtc!= 0: c.execute("UPDATE users SET mbtc_balance = mbtc_balance + %s WHERE user_id=%s", (mbtc, user_id))
+            if usd!= 0: c.execute("UPDATE users SET usd_balance = usd_balance + %s WHERE user_id=%s", (usd, user_id))
+            if method!= "SYSTEM": c.execute("INSERT INTO purchases (user_id, method, amount, price_usd, status, time) VALUES (%s,%s,%s,%s,%s,%s)",(user_id, method, mbtc, usd, "SUCCESS", datetime.now(timezone.utc).isoformat()))
+        conn.commit()
     if method!= "SYSTEM" and context:
         asyncio.create_task(announce_purchase(context, user_id, mbtc, method))
 
 def create_sell_order(seller_id, amount, price):
-    conn = get_db()
-    with conn.cursor() as c:
-        c.execute("UPDATE users SET mbtc_balance = mbtc_balance - %s WHERE user_id=%s AND mbtc_balance >= %s", (amount, seller_id, amount))
-        if c.rowcount == 0:
-            conn.close()
-            return False
-        c.execute("INSERT INTO market (seller_id, amount, price_per_mbtc, time) VALUES (%s,%s,%s,%s)", (seller_id, amount, price, datetime.now(timezone.utc).isoformat()))
-    conn.commit()
-    conn.close()
+    with get_db() as conn:
+        with conn.cursor() as c:
+            c.execute("UPDATE users SET mbtc_balance = mbtc_balance - %s WHERE user_id=%s AND mbtc_balance >= %s", (amount, seller_id, amount))
+            if c.rowcount == 0:
+                return False
+            c.execute("INSERT INTO market (seller_id, amount, price_per_mbtc, time) VALUES (%s,%s,%s,%s)", (seller_id, amount, price, datetime.now(timezone.utc).isoformat()))
+        conn.commit()
     return True
 
 def buy_from_market(buyer_id, order_id):
-    conn = get_db()
-    with conn.cursor() as c:
-        c.execute("SELECT seller_id, amount, price_per_mbtc FROM market WHERE id=%s AND status='OPEN'", (order_id,)); order = c.fetchone()
-        if not order:
-            conn.close()
-            return "Order not found"
-        seller_id, amount, price = order; total_cost = amount * price; fee = total_cost * FEE; seller_gets = total_cost - fee
-        c.execute("SELECT usd_balance FROM users WHERE user_id=%s", (buyer_id,)); bal = c.fetchone()[0]
-        if bal < total_cost:
-            conn.close()
-            return "Insufficient USD balance"
-        c.execute("UPDATE users SET usd_balance = usd_balance - %s WHERE user_id=%s", (total_cost, buyer_id))
-        c.execute("UPDATE users SET mbtc_balance = mbtc_balance + %s WHERE user_id=%s", (amount, buyer_id))
-        c.execute("UPDATE users SET usd_balance = usd_balance + %s WHERE user_id=%s", (seller_gets, seller_id))
-        c.execute("UPDATE users SET usd_balance = usd_balance + %s WHERE user_id=%s", (fee, ADMIN_ID))
-        c.execute("UPDATE market SET status='SOLD' WHERE id=%s", (order_id,))
-    conn.commit()
-    conn.close()
+    with get_db() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT seller_id, amount, price_per_mbtc FROM market WHERE id=%s AND status='OPEN'", (order_id,)); order = c.fetchone()
+            if not order:
+                return "Order not found"
+            seller_id, amount, price = order; total_cost = amount * price; fee = total_cost * FEE; seller_gets = total_cost - fee
+            c.execute("SELECT usd_balance FROM users WHERE user_id=%s", (buyer_id,)); bal = c.fetchone()
+            if not bal or bal[0] < total_cost:
+                return "Insufficient USD balance"
+            c.execute("UPDATE users SET usd_balance = usd_balance - %s WHERE user_id=%s", (total_cost, buyer_id))
+            c.execute("UPDATE users SET mbtc_balance = mbtc_balance + %s WHERE user_id=%s", (amount, buyer_id))
+            c.execute("UPDATE users SET usd_balance = usd_balance + %s WHERE user_id=%s", (seller_gets, seller_id))
+            c.execute("UPDATE users SET usd_balance = usd_balance + %s WHERE user_id=%s", (fee, ADMIN_ID))
+            c.execute("UPDATE market SET status='SOLD' WHERE id=%s", (order_id,))
+        conn.commit()
     return "SUCCESS - Tokens Delivered!"
 
 async def announce_purchase(context, user_id, amount, method):
@@ -162,10 +155,9 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Buy {TOKEN_NAME} from Bot:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def market(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = get_db()
-    with conn.cursor() as c:
-        c.execute("SELECT id, amount, price_per_mbtc FROM market WHERE status='OPEN' LIMIT 10"); orders = c.fetchall()
-    conn.close()
+    with get_db() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT id, amount, price_per_mbtc FROM market WHERE status='OPEN' LIMIT 10"); orders = c.fetchall()
     if not orders:
         await update.message.reply_text("Market is empty. Use /sell to list yours")
     else:
@@ -209,13 +201,13 @@ async def translate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    user_id = query.from_user.id
     await query.answer()
     packs = {"buy_1":(1,PRICE_1),"buy_10":(10,PRICE_10),"buy_50":(50,PRICE_50),"buy_100":(100,PRICE_100)}
     if query.data in packs:
         amount, price = packs[query.data]
-        invoice = create_nowpay_invoice(price, "USD", f"mbtc_{amount}_{user_id}", "ton")
-        await query.message.reply_text(f"Pay here:\n{invoice.get('invoice_url')}")
+        invoice = create_nowpay_invoice(price, "USD", f"mbtc_{amount}_{query.from_user.id}", "ton")
+        url = invoice.get('invoice_url', 'Error creating invoice')
+        await query.message.reply_text(f"Pay here:\n{url}")
     elif query.data == "buy_crypto":
         await query.message.reply_text("TON, BTC, ETH, BNB, SOL, USDT, TRX coming. Use buttons above for now.")
 
@@ -233,6 +225,7 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start)); app.add_handler(CommandHandler("buy", buy)); app.add_handler(CommandHandler("market", market)); app.add_handler(CommandHandler("sell", sell)); app.add_handler(CommandHandler("buyorder", buyorder)); app.add_handler(CommandHandler("send", send_tokens)); app.add_handler(CommandHandler("balance", balance)); app.add_handler(CommandHandler("ref", ref)); app.add_handler(CommandHandler("translate", translate_cmd))
     app.add_handler(CallbackQueryHandler(callback_handler)); app.add_handler(PreCheckoutQueryHandler(lambda u,c: u.pre_checkout_query.answer(ok=True))); app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    print("Bot is running")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__": main()
