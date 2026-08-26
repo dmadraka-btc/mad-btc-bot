@@ -1,3 +1,14 @@
+import sys, types; sys.modules['imghdr'] = types.ModuleType('imghdr'); sys.modules['imghdr'].what = lambda *a, **k: None
+
+import os, logging, asyncio, psycopg, requests, hashlib, json
+from datetime import datetime, timezone
+from threading import Thread
+from dotenv import load_dotenv
+from flask import Flask, request
+load_dotenv()
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, PreCheckoutQueryHandler, ContextTypes, filters
 import os, logging, asyncio, psycopg, requests, hashlib, json
 from datetime import datetime, timezone
 from threading import Thread
