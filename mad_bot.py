@@ -1,11 +1,13 @@
-import os, logging, threading, psycopg, requests, hashlib, json
+import imghdr; import sys; sys.modules['imghdr'] = imghdr
+import os, logging, asyncio, psycopg, requests, hashlib, json
 from datetime import datetime, timezone
+from threading import Thread
 from dotenv import load_dotenv
 from flask import Flask, request
 load_dotenv()
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, PreCheckoutQueryHandler, Filters, CallbackContext
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, PreCheckoutQueryHandler, ContextTypes, filters
 
 TOKEN_NAME = "$MBTC"
 TOKEN_FULL_NAME = "MAD BTC - MAKING A DIFFERENCE"
@@ -61,7 +63,7 @@ def add_balance(user_id, mbtc=0, usd=0, method="SYSTEM", context=None):
             if usd!= 0: c.execute("UPDATE users SET usd_balance = usd_balance + %s WHERE user_id=%s", (usd, user_id))
             if method!= "SYSTEM": c.execute("INSERT INTO purchases (user_id, method, amount, price_usd, status, time) VALUES (%s,%s,%s,%s,%s,%s)",(user_id, method, mbtc, usd, "SUCCESS", datetime.now(timezone.utc).isoformat()))
         conn.commit()
-    if method!= "SYSTEM" and context: threading.Thread(target=announce_purchase, args=(context, user_id, mbtc, method)).start()
+    if method!= "SYSTEM" and context: asyncio.create_task(announce_purchase(context, user_id, mbtc, method))
 
 def create_sell_order(seller_id, amount, price):
     with get_db() as conn:
@@ -88,8 +90,8 @@ def buy_from_market(buyer_id, order_id):
         conn.commit()
     return "SUCCESS - Tokens Delivered!"
 
-def announce_purchase(context, user_id, amount, method):
-    try: user = context.bot.get_chat(user_id); name = f"@{user.username}" if user.username else user.first_name; context.bot.send_message(chat_id=CHANNEL_ID, text=f"🎉 NEW BUYER!\n\n{name} bought {amount:.2f} {TOKEN_NAME}\nPayment: {method.upper()}\n\nJoin: https://t.me/{BOT_USERNAME}")
+async def announce_purchase(context, user_id, amount, method):
+    try: user = await context.bot.get_chat(user_id); name = f"@{user.username}" if user.username else user.first_name; await context.bot.send_message(chat_id=CHANNEL_ID, text=f"🎉 NEW BUYER!\n\n{name} bought {amount:.2f} {TOKEN_NAME}\nPayment: {method.upper()}\n\nJoin: https://t.me/{BOT_USERNAME}")
     except Exception as e: logger.error(f"Announce failed: {e}")
 
 def create_nowpay_invoice(price_amount, price_currency, order_id, pay_currency):
@@ -106,50 +108,49 @@ def ipn():
     if data.get('payment_status') == 'finished': parts = data.get('order_id').split('_'); user_id = int(parts[-1]); amount = float(parts[-2]); add_balance(user_id, mbtc=amount, usd=amount*PRICE_1, method=data.get('pay_currency'))
     return 'ok', 200
 
-def start(update: Update, context: CallbackContext):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user; referrer = int(context.args[0].replace("ref", "")) if context.args and context.args[0].startswith("ref") else None; add_user(user.id, user.username, referrer)
-    update.message.reply_text(f"🚀 Welcome to {TOKEN_FULL_NAME}\n\nPre-Sale: 1 {TOKEN_NAME} = $0.10\nBulk: 100 for $7\n/buy /market /sell /balance /ref /translate")
+    await update.message.reply_text(f"🚀 Welcome to {TOKEN_FULL_NAME}\n\nPre-Sale: 1 {TOKEN_NAME} = $0.10\nBulk: 100 for $7\n/buy /market /sell /balance /ref /translate")
 
-def buy(update: Update, context: CallbackContext):
+async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(f"1 {TOKEN_NAME} - $0.10", callback_data="buy_1")],[InlineKeyboardButton(f"10 {TOKEN_NAME} - $0.90", callback_data="buy_10")],[InlineKeyboardButton(f"50 {TOKEN_NAME} - $4.00", callback_data="buy_50")],[InlineKeyboardButton(f"100 {TOKEN_NAME} - $7.00 🔥", callback_data="buy_100")]]
-    update.message.reply_text(f"Buy {TOKEN_NAME} from Bot:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text(f"Buy {TOKEN_NAME} from Bot:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-def market(update: Update, context: CallbackContext):
+async def market(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with get_db() as conn:
         with conn.cursor() as c: c.execute("SELECT id, amount, price_per_mbtc FROM market WHERE status='OPEN' LIMIT 10"); orders = c.fetchall()
-    if not orders: update.message.reply_text("Market is empty. Use /sell to list yours")
-    else: update.message.reply_text("📊 P2P MARKET\n" + "\n".join([f"ID:{o[0]} | {o[1]} {TOKEN_NAME} @ ${o[2]:.3f} each" for o in orders]) + "\n\nTo buy: /buyorder ID")
+    if not orders: await update.message.reply_text("Market is empty. Use /sell to list yours")
+    else: await update.message.reply_text("📊 P2P MARKET\n" + "\n".join([f"ID:{o[0]} | {o[1]} {TOKEN_NAME} @ ${o[2]:.3f} each" for o in orders]) + "\n\nTo buy: /buyorder ID")
 
-def sell(update: Update, context: CallbackContext):
-    try: amount = float(context.args[0]); price = float(context.args[1]); msg = "✅ Listed!" if create_sell_order(update.effective_user.id, amount, price) else "❌ Insufficient $MBTC"; update.message.reply_text(msg)
-    except: update.message.reply_text("Usage: /sell 100 0.12")
+async def sell(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try: amount = float(context.args[0]); price = float(context.args[1]); msg = "✅ Listed!" if create_sell_order(update.effective_user.id, amount, price) else "❌ Insufficient $MBTC"; await update.message.reply_text(msg)
+    except: await update.message.reply_text("Usage: /sell 100 0.12")
 
-def buyorder(update: Update, context: CallbackContext):
-    try: result = buy_from_market(update.effective_user.id, int(context.args[0])); update.message.reply_text(result)
-    except: update.message.reply_text("Usage: /buyorder 5")
+async def buyorder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try: result = buy_from_market(update.effective_user.id, int(context.args[0])); await update.message.reply_text(result)
+    except: await update.message.reply_text("Usage: /buyorder 5")
 
-def balance(update: Update, context: CallbackContext): bal = get_user(update.effective_user.id); update.message.reply_text(f"💰 Balance:\n{bal[0]:.4f} {TOKEN_NAME}\n${bal[1]:.2f} USD")
-def ref(update: Update, context: CallbackContext): update.message.reply_text(f"🔗 Your Link:\nhttps://t.me/{BOT_USERNAME}?start=ref{update.effective_user.id}")
-def translate_cmd(update: Update, context: CallbackContext):
-    if len(context.args) < 2: update.message.reply_text("Usage: /translate ru Hello"); return
-    update.message.reply_text(f"🇺🇸 -> {context.args[0].upper()}\n{yandex_translate(' '.join(context.args[1:]), context.args[0])}")
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE): bal = get_user(update.effective_user.id); await update.message.reply_text(f"💰 Balance:\n{bal[0]:.4f} {TOKEN_NAME}\n${bal[1]:.2f} USD")
+async def ref(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text(f"🔗 Your Link:\nhttps://t.me/{BOT_USERNAME}?start=ref{update.effective_user.id}")
+async def translate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2: await update.message.reply_text("Usage: /translate ru Hello"); return
+    await update.message.reply_text(f"🇺🇸 -> {context.args[0].upper()}\n{yandex_translate(' '.join(context.args[1:]), context.args[0])}")
 
-def callback_handler(update: Update, context: CallbackContext):
-    query = update.callback_query; query.answer()
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
     packs = {"buy_1":(1,PRICE_1),"buy_10":(10,PRICE_10),"buy_50":(50,PRICE_50),"buy_100":(100,PRICE_100)}
-    if query.data in packs: amount, price = packs[query.data]; invoice = create_nowpay_invoice(price, "USD", f"mbtc_{amount}_{query.from_user.id}", "ton"); query.message.reply_text(f"Pay here:\n{invoice.get('invoice_url', 'Error')}")
+    if query.data in packs: amount, price = packs[query.data]; invoice = create_nowpay_invoice(price, "USD", f"mbtc_{amount}_{query.from_user.id}", "ton"); await query.message.reply_text(f"Pay here:\n{invoice.get('invoice_url', 'Error')}")
 
-def successful_payment(update: Update, context: CallbackContext):
-    mbtc = (update.message.successful_payment.total_amount / 100) / STARS_PER_MBTC; add_balance(update.message.from_user.id, mbtc=mbtc, usd=mbtc*PRICE_1, method="STARS", context=context); update.message.reply_text(f"✅ Payment Received!\nYou got: {mbtc:.2f} {TOKEN_NAME}")
+async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mbtc = (update.message.successful_payment.total_amount / 100) / STARS_PER_MBTC; add_balance(update.message.from_user.id, mbtc=mbtc, usd=mbtc*PRICE_1, method="STARS", context=context); await update.message.reply_text(f"✅ Payment Received!\nYou got: {mbtc:.2f} {TOKEN_NAME}")
 
 def run_flask(): app_flask.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
 
 def main():
-    init_db(); threading.Thread(target=run_flask, daemon=True).start()
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start)); dp.add_handler(CommandHandler("buy", buy)); dp.add_handler(CommandHandler("market", market)); dp.add_handler(CommandHandler("sell", sell)); dp.add_handler(CommandHandler("buyorder", buyorder)); dp.add_handler(CommandHandler("balance", balance)); dp.add_handler(CommandHandler("ref", ref)); dp.add_handler(CommandHandler("translate", translate_cmd))
-    dp.add_handler(CallbackQueryHandler(callback_handler)); dp.add_handler(PreCheckoutQueryHandler(lambda u,c: u.pre_checkout_query.answer(ok=True))); dp.add_handler(MessageHandler(Filters.successful_payment, successful_payment))
-    print("Bot is running"); updater.start_polling(drop_pending_updates=True); updater.idle()
+    init_db(); Thread(target=run_flask, daemon=True).start()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start)); app.add_handler(CommandHandler("buy", buy)); app.add_handler(CommandHandler("market", market)); app.add_handler(CommandHandler("sell", sell)); app.add_handler(CommandHandler("buyorder", buyorder)); app.add_handler(CommandHandler("balance", balance)); app.add_handler(CommandHandler("ref", ref)); app.add_handler(CommandHandler("translate", translate_cmd))
+    app.add_handler(CallbackQueryHandler(callback_handler)); app.add_handler(PreCheckoutQueryHandler(lambda u,c: u.pre_checkout_query.answer(ok=True))); app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    print("Bot is running"); app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__": main()
