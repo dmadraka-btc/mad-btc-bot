@@ -1,4 +1,7 @@
-import sys, types; sys.modules['imghdr'] = types.ModuleType('imghdr'); sys.modules['imghdr'].what = lambda *a, **k: None
+import sys, types
+sys.modules['imghdr'] = types.ModuleType('imghdr')
+sys.modules['imghdr'].what = lambda *a, **k: None
+import telegram; sys.modules['telegram'] = telegram
 
 import os, logging, asyncio, psycopg, requests, hashlib, json
 from datetime import datetime, timezone
