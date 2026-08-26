@@ -46,10 +46,7 @@ CHANNEL_ID = -1002764321871
 BOT_USERNAME = "madraka001bot"
 
 # ==================== LOGGING ====================
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ==================== FLASK ====================
@@ -140,32 +137,91 @@ def create_nowpay_invoice(price_amount, price_currency, order_id, pay_currency):
 # ==================== WEBSITE ROUTES ====================
 @app_flask.route("/")
 def home():
+    domain = f"https://{RAILWAY_PUBLIC_DOMAIN}"
     return f"""
-    <html><head><title>{TOKEN_FULL_NAME}</title>
+    <!DOCTYPE html><html lang="en"><head>
+    <title>{TOKEN_FULL_NAME} - Community Token on TON</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
     <style>
-        body{{font-family:Arial;background:#0d1117;color:#fff;text-align:center;padding:50px;margin:0}}
-       .container{{max-width:600px;margin:auto}}
-       .btn{{background:#f7931a;padding:15px 30px;border-radius:10px;color:#000;text-decoration:none;font-weight:bold;display:inline-block;margin:10px}}
-       .pack{{background:#161b22;padding:15px;border-radius:8px;margin:10px}}
-       .ipn{{background:#222;color:#0f0;padding:10px;border-radius:5px;word-break:break-all}}
+        :root{{--bg:#0B0F19;--card:#111827;--accent:#F7931A;--text:#E5E7EB;--muted:#9CA3AF}}
+        *{{margin:0;padding:0;box-sizing:border-box}}
+        body{{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text)}}
+        nav{{display:flex;justify-content:space-between;align-items:center;padding:20px 10%;background:rgba(17,24,39,0.7);backdrop-filter:blur(10px);position:sticky;top:0;z-index:10}}
+        nav.logo{{font-weight:800;font-size:1.3em}}
+        nav a{{color:var(--text);text-decoration:none;margin:0 15px;font-weight:600}}
+       .btn{{background:var(--accent);padding:12px 24px;border-radius:10px;color:#000;text-decoration:none;font-weight:800;transition:0.2s;display:inline-block}}
+       .btn:hover{{opacity:0.9;transform:translateY(-2px)}}
+       .btn-secondary{{background:#2F81F7;color:#fff}}
+       .hero{{text-align:center;padding:120px 10% 80px}}
+       .hero h1{{font-size:3.5em;font-weight:800;background:linear-gradient(90deg,#F7931A,#FFD700);-webkit-background-clip:text;-webkit-text-fill-color:transparent}}
+       .section{{padding:80px 10%}}
+       .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px}}
+       .card{{background:var(--card);padding:30px;border-radius:16px;border:1px solid #1F2937}}
+       .price{{font-size:2.2em;color:var(--accent);font-weight:800;margin:10px 0}}
+        footer{{text-align:center;padding:40px 10%;color:var(--muted);border-top:1px solid #1F2937}}
+        footer a{{color:var(--muted);margin:0 10px;text-decoration:none}}
+       .ipn{{background:#010409;color:#3fb950;padding:12px;border-radius:8px;word-break:break-all;font-size:12px;font-family:monospace}}
     </style>
     </head><body>
-    <div class="container">
-    <h1>🚀 {TOKEN_FULL_NAME}</h1>
-    <h2>Pre-Sale Live: 1 {TOKEN_NAME} = $0.10</h2>
-    <p>Buy directly below or use our Telegram Bot</p>
-    <a href="https://t.me/{BOT_USERNAME}" class="btn">Open Telegram Bot</a>
-    
-    <h3>Bulk Packages</h3>
-    <div class="pack"><a href="/buy/1" class="btn">Buy 1 {TOKEN_NAME} - $0.10</a></div>
-    <div class="pack"><a href="/buy/10" class="btn">Buy 10 {TOKEN_NAME} - $0.90</a></div>
-    <div class="pack"><a href="/buy/50" class="btn">Buy 50 {TOKEN_NAME} - $4.00</a></div>
-    <div class="pack"><a href="/buy/100" class="btn">Buy 100 {TOKEN_NAME} - $7.00 🔥</a></div>
-    
-    <h4>NowPayments IPN URL:</h4>
-    <p class="ipn">https://{RAILWAY_PUBLIC_DOMAIN}/ipn</p>
+
+    <nav>
+        <div class="logo">🚀 {TOKEN_NAME}</div>
+        <div>
+            <a href="/">Home</a>
+            <a href="#about">About</a>
+            <a href="#tokenomics">Tokenomics</a>
+            <a href="/privacy">Privacy</a>
+        </div>
+        <a href="https://t.me/{BOT_USERNAME}" class="btn btn-secondary">Launch Bot</a>
+    </nav>
+
+    <div class="hero">
+        <h1>{TOKEN_FULL_NAME}</h1>
+        <p style="font-size:1.2em;color:var(--muted);margin:20px 0;max-width:700px;margin:auto">Making A Difference Through Community, Charity, and Web3 on the TON Blockchain</p>
+        <div style="margin-top:30px">
+            <a href="#buy" class="btn">Buy Presale Now</a>
+            <a href="https://t.me/{BOT_USERNAME}" class="btn btn-secondary">Open Telegram</a>
+        </div>
     </div>
+
+    <div id="buy" class="section">
+        <h2 style="text-align:center;margin-bottom:40px">Presale Packages</h2>
+        <div class="grid">
+            <div class="card"><h3>Starter</h3><div class="price">1 {TOKEN_NAME}</div><p>${PRICE_1}</p><a href="{domain}/buy/1" class="btn">Buy Now</a></div>
+            <div class="card"><h3>Popular</h3><div class="price">10 {TOKEN_NAME}</div><p>${PRICE_10}</p><a href="{domain}/buy/10" class="btn">Buy Now</a></div>
+            <div class="card"><h3>Whale</h3><div class="price">50 {TOKEN_NAME}</div><p>${PRICE_50}</p><a href="{domain}/buy/50" class="btn">Buy Now</a></div>
+            <div class="card" style="border:2px solid var(--accent)"><h3>BEST VALUE 🔥</h3><div class="price">100 {TOKEN_NAME}</div><p>${PRICE_100}</p><a href="{domain}/buy/100" class="btn">Buy Now</a></div>
+        </div>
+    </div>
+
+    <div id="about" class="section" style="background:var(--card)">
+        <h2>About {TOKEN_FULL_NAME}</h2>
+        <p style="color:var(--muted);margin-top:20px;line-height:1.8;max-width:800px">
+        {TOKEN_FULL_NAME} is a community-driven utility token built on TON. Our mission is to leverage blockchain to fund transparency and real-world impact. 
+        5% of all transactions go to our charity wallet. We are 100% community owned, no VC, no presale dump. Join us in Making A Difference.
+        </p>
+    </div>
+
+    <div id="tokenomics" class="section">
+        <h2>Tokenomics</h2>
+        <div class="grid">
+            <div class="card"><h4>Presale Price</h4><p>1 {TOKEN_NAME} = ${PRICE_1}</p></div>
+            <div class="card"><h4>Total Supply</h4><p>100,000,000 {TOKEN_NAME}</p></div>
+            <div class="card"><h4>Charity Wallet</h4><p>5% of every transaction</p></div>
+            <div class="card"><h4>Blockchain</h4><p>TON - Fast & Low Fee</p></div>
+        </div>
+    </div>
+
+    <div class="section" style="background:var(--card)">
+        <h3>NowPayments IPN URL</h3>
+        <p class="ipn">{domain}/ipn</p>
+    </div>
+
+    <footer>
+        <p>© 2026 {TOKEN_FULL_NAME}. All rights reserved.</p>
+        <p><a href="/privacy">Privacy Policy</a> | <a href="/terms">Terms</a> | <a href="https://t.me/{BOT_USERNAME}">Telegram</a></p>
+    </footer>
     </body></html>
     """
 
@@ -178,6 +234,36 @@ def buy_page(amount):
     url = invoice.get("invoice_url")
     if url: return f'<script>window.location = "{url}"</script>'
     else: return "Error creating invoice. Try again.", 500
+
+@app_flask.route("/privacy")
+def privacy():
+    return f"""
+    <html><head><title>Privacy Policy - {TOKEN_FULL_NAME}</title><style>body{{font-family:Inter;background:#0B0F19;color:#E5E7EB;padding:40px 10%;max-width:900px;margin:auto;line-height:1.8}} h1,h3{{color:#F7931A}} a{{color:#F7931A}}</style></head><body>
+    <h1>Privacy Policy</h1>
+    <p>Last Updated: August 26, 2026</p>
+    <h3>1. Information We Collect</h3>
+    <p>We collect your Telegram User ID and Username to manage your {TOKEN_NAME} balance. We do not collect emails or KYC data during presale.</p>
+    <h3>2. Payments</h3>
+    <p>Payments are processed by NowPayments.io. We do not store your crypto wallet address or card details. Refer to NowPayments Privacy Policy.</p>
+    <h3>3. Data Usage</h3>
+    <p>Your data is used only to provide the bot service, process transactions, and send you updates about {TOKEN_NAME}.</p>
+    <h3>4. Contact</h3>
+    <p>For privacy questions contact us via Telegram: @{BOT_USERNAME}</p>
+    <br><a href="/">← Back to Home</a>
+    </body></html>
+    """
+
+@app_flask.route("/terms")
+def terms():
+    return f"""
+    <html><head><title>Terms - {TOKEN_FULL_NAME}</title><style>body{{font-family:Inter;background:#0B0F19;color:#E5E7EB;padding:40px 10%;max-width:900px;margin:auto;line-height:1.8}} h1{{color:#F7931A}} a{{color:#F7931A}}</style></head><body>
+    <h1>Terms & Conditions</h1>
+    <p>{TOKEN_NAME} is a utility token. Buying {TOKEN_NAME} does not give you equity or ownership in {TOKEN_FULL_NAME}.</p>
+    <p>Cryptocurrency is volatile and high risk. Only purchase what you can afford to lose. All sales are final. No refunds.</p>
+    <p>By using our Telegram bot and website you agree to these terms.</p>
+    <br><a href="/">← Back to Home</a>
+    </body></html>
+    """
 
 # ==================== FLASK ROUTES ====================
 @app_flask.route("/ipn", methods=["POST"])
@@ -200,7 +286,7 @@ def run_flask():
 # ==================== TELEGRAM HANDLERS ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user; referrer = int(context.args[0].replace("ref", "")) if context.args and context.args[0].startswith("ref") else None; add_user(user.id, user.username, referrer)
-    await update.message.reply_text(f"🚀 Welcome to {TOKEN_FULL_NAME}\n\nPre-Sale: 1 {TOKEN_NAME} = $0.10\nBulk: 100 for $7\n/buy /market /sell /balance /ref /translate")
+    await update.message.reply_text(f"🚀 Welcome to {TOKEN_FULL_NAME}\n\nPre-Sale: 1 {TOKEN_NAME} = $0.10\nBulk: 100 for $7\n\n/buy /market /sell /balance /ref /translate")
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(f"1 {TOKEN_NAME} - $0.10", callback_data="buy_1")],[InlineKeyboardButton(f"10 {TOKEN_NAME} - $0.90", callback_data="buy_10")],[InlineKeyboardButton(f"50 {TOKEN_NAME} - $4.00", callback_data="buy_50")],[InlineKeyboardButton(f"100 {TOKEN_NAME} - $7.00 🔥", callback_data="buy_100")]]
