@@ -32,7 +32,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 NOWPAY_API_KEY = os.getenv("NOWPAY_API_KEY")
 NOWPAY_IPN_SECRET = os.getenv("NOWPAY_IPN_SECRET")
-RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN")
+RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN", "localhost")
 YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
 YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID")
 
@@ -137,6 +137,48 @@ def create_nowpay_invoice(price_amount, price_currency, order_id, pay_currency):
     try: resp = requests.post(url, json=payload, headers=headers, timeout=15); resp.raise_for_status(); return resp.json()
     except Exception as e: logger.error(f"NOWPAY ERROR: {e}"); return {}
 
+# ==================== WEBSITE ROUTES ====================
+@app_flask.route("/")
+def home():
+    return f"""
+    <html><head><title>{TOKEN_FULL_NAME}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body{{font-family:Arial;background:#0d1117;color:#fff;text-align:center;padding:50px;margin:0}}
+       .container{{max-width:600px;margin:auto}}
+       .btn{{background:#f7931a;padding:15px 30px;border-radius:10px;color:#000;text-decoration:none;font-weight:bold;display:inline-block;margin:10px}}
+       .pack{{background:#161b22;padding:15px;border-radius:8px;margin:10px}}
+       .ipn{{background:#222;color:#0f0;padding:10px;border-radius:5px;word-break:break-all}}
+    </style>
+    </head><body>
+    <div class="container">
+    <h1>🚀 {TOKEN_FULL_NAME}</h1>
+    <h2>Pre-Sale Live: 1 {TOKEN_NAME} = $0.10</h2>
+    <p>Buy directly below or use our Telegram Bot</p>
+    <a href="https://t.me/{BOT_USERNAME}" class="btn">Open Telegram Bot</a>
+    
+    <h3>Bulk Packages</h3>
+    <div class="pack"><a href="/buy/1" class="btn">Buy 1 {TOKEN_NAME} - $0.10</a></div>
+    <div class="pack"><a href="/buy/10" class="btn">Buy 10 {TOKEN_NAME} - $0.90</a></div>
+    <div class="pack"><a href="/buy/50" class="btn">Buy 50 {TOKEN_NAME} - $4.00</a></div>
+    <div class="pack"><a href="/buy/100" class="btn">Buy 100 {TOKEN_NAME} - $7.00 🔥</a></div>
+    
+    <h4>NowPayments IPN URL:</h4>
+    <p class="ipn">https://{RAILWAY_PUBLIC_DOMAIN}/ipn</p>
+    </div>
+    </body></html>
+    """
+
+@app_flask.route("/buy/<amount>")
+def buy_page(amount):
+    packs = {"1":PRICE_1,"10":PRICE_10,"50":PRICE_50,"100":PRICE_100}
+    if amount not in packs: return "Invalid pack", 400
+    price = packs[amount]
+    invoice = create_nowpay_invoice(price, "USD", f"web_{amount}_0", "ton")
+    url = invoice.get("invoice_url")
+    if url: return f'<script>window.location = "{url}"</script>'
+    else: return "Error creating invoice. Try again.", 500
+
 # ==================== FLASK ROUTES ====================
 @app_flask.route("/ipn", methods=["POST"])
 def ipn():
@@ -198,7 +240,7 @@ async def precheckout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # ==================== MAIN ====================
 def main():
-    init_db(); Thread(target=run_flask, daemon=True).start(); logger.info("Flask IPN server started")
+    init_db(); Thread(target=run_flask, daemon=True).start(); logger.info("Flask Website + IPN server started")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start)); app.add_handler(CommandHandler("buy", buy)); app.add_handler(CommandHandler("market", market)); app.add_handler(CommandHandler("sell", sell)); app.add_handler(CommandHandler("buyorder", buyorder)); app.add_handler(CommandHandler("balance", balance)); app.add_handler(CommandHandler("ref", ref)); app.add_handler(CommandHandler("translate", translate_cmd))
     app.add_handler(CallbackQueryHandler(callback_handler)); app.add_handler(PreCheckoutQueryHandler(precheckout_handler)); app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
