@@ -1,4 +1,3 @@
-import imghdr; import sys; sys.modules['imghdr'] = imghdr
 import os, logging, asyncio, psycopg, requests, hashlib, json
 from datetime import datetime, timezone
 from threading import Thread
