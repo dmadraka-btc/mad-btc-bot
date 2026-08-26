@@ -9,15 +9,6 @@ load_dotenv()
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, PreCheckoutQueryHandler, ContextTypes, filters
-import os, logging, asyncio, psycopg, requests, hashlib, json
-from datetime import datetime, timezone
-from threading import Thread
-from dotenv import load_dotenv
-from flask import Flask, request
-load_dotenv()
-
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, PreCheckoutQueryHandler, ContextTypes, filters
 
 TOKEN_NAME = "$MBTC"
 TOKEN_FULL_NAME = "MAD BTC - MAKING A DIFFERENCE"
