@@ -1,18 +1,30 @@
-import os, logging, asyncio, psycopg, requests, hashlib, json
-from datetime import datetime, timezone
-sys.modules['imghdr'].what = lambda *a, **k: None
-import telegram; sys.modules['telegram'] = telegram
-
-import os, logging, asyncio, psycopg, requests, hashlib, json
+import os
+import logging
+import asyncio
+import psycopg
+import requests
+import hashlib
+import json
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from threading import Thread
 from dotenv import load_dotenv
 from flask import Flask, request
+
 load_dotenv()
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, PreCheckoutQueryHandler, ContextTypes, filters
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    PreCheckoutQueryHandler,
+    ContextTypes,
+    filters,
+)
 
+# ==================== CONFIG ====================
 TOKEN_NAME = "$MBTC"
 TOKEN_FULL_NAME = "MAD BTC - MAKING A DIFFERENCE"
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -20,44 +32,57 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 NOWPAY_API_KEY = os.getenv("NOWPAY_API_KEY")
 NOWPAY_IPN_SECRET = os.getenv("NOWPAY_IPN_SECRET")
-RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN", "localhost")
+RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN")
 YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
 YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID")
 
-PRICE_1 = 0.10; PRICE_10 = 0.90; PRICE_50 = 4.00; PRICE_100 = 7.00
-STARS_PER_MBTC = 10; FEE = 0.02
+PRICE_1 = 0.10
+PRICE_10 = 0.90
+PRICE_50 = 4.00
+PRICE_100 = 7.00
+STARS_PER_MBTC = 10
+FEE = 0.02
 CHANNEL_ID = -1002764321871
 BOT_USERNAME = "madraka001bot"
-logging.basicConfig(level=logging.INFO)
+
+# ==================== LOGGING ====================
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
 logger = logging.getLogger(__name__)
+
+# ==================== FLASK ====================
 app_flask = Flask(__name__)
 
-def yandex_translate(text, target_lang="en"):
-    if not YANDEX_API_KEY or not YANDEX_FOLDER_ID: return "Yandex not configured"
-    url = "https://translate.api.cloud.yandex.net/translate/v2/translate"
-    headers = {"Authorization": f"Api-Key {YANDEX_API_KEY}"}
-    body = {"targetLanguageCode": target_lang, "texts": [text], "folderId": YANDEX_FOLDER_ID}
-    try: return requests.post(url, headers=headers, json=body, timeout=10).json()["translations"][0]["text"]
-    except Exception as e: logger.error(f"YANDEX ERROR: {e}"); return "Translation failed"
+# ==================== DATABASE ====================
+@contextmanager
+def get_db():
+    conn = psycopg.connect(DATABASE_URL, sslmode="require", autocommit=False)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
-def get_db(): return psycopg.connect(DATABASE_URL, autocommit=False)
 def init_db():
     with get_db() as conn:
         with conn.cursor() as c:
             c.execute("CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username TEXT, mbtc_balance REAL DEFAULT 0, usd_balance REAL DEFAULT 0, referrer_id BIGINT, joined_at TEXT, lang TEXT DEFAULT 'en')")
             c.execute("CREATE TABLE IF NOT EXISTS purchases (id SERIAL PRIMARY KEY, user_id BIGINT, method TEXT, amount REAL, price_usd REAL, status TEXT, time TEXT)")
             c.execute("CREATE TABLE IF NOT EXISTS market (id SERIAL PRIMARY KEY, seller_id BIGINT, amount REAL, price_per_mbtc REAL, status TEXT DEFAULT 'OPEN', time TEXT)")
-        conn.commit()
 
 def add_user(user_id, username, referrer_id=None):
     with get_db() as conn:
         with conn.cursor() as c: c.execute("INSERT INTO users (user_id, username, referrer_id, joined_at) VALUES (%s,%s,%s,%s) ON CONFLICT (user_id) DO NOTHING",(user_id, username, referrer_id, datetime.now(timezone.utc).isoformat()))
-        conn.commit()
 
 def get_user(user_id):
     with get_db() as conn:
-        with conn.cursor() as c: c.execute("SELECT mbtc_balance, usd_balance FROM users WHERE user_id=%s", (user_id,)); res = c.fetchone() or (0,0)
-    return res
+        with conn.cursor() as c: c.execute("SELECT mbtc_balance, usd_balance FROM users WHERE user_id=%s", (user_id,)); res = c.fetchone()
+    return res if res else (0.0, 0.0)
 
 def add_balance(user_id, mbtc=0, usd=0, method="SYSTEM", context=None):
     with get_db() as conn:
@@ -66,8 +91,9 @@ def add_balance(user_id, mbtc=0, usd=0, method="SYSTEM", context=None):
             if mbtc!= 0: c.execute("UPDATE users SET mbtc_balance = mbtc_balance + %s WHERE user_id=%s", (mbtc, user_id))
             if usd!= 0: c.execute("UPDATE users SET usd_balance = usd_balance + %s WHERE user_id=%s", (usd, user_id))
             if method!= "SYSTEM": c.execute("INSERT INTO purchases (user_id, method, amount, price_usd, status, time) VALUES (%s,%s,%s,%s,%s,%s)",(user_id, method, mbtc, usd, "SUCCESS", datetime.now(timezone.utc).isoformat()))
-        conn.commit()
-    if method!= "SYSTEM" and context: asyncio.create_task(announce_purchase(context, user_id, mbtc, method))
+    if method!= "SYSTEM" and context:
+        try: asyncio.get_running_loop().create_task(announce_purchase(context, user_id, mbtc, method))
+        except RuntimeError: logger.warning("No event loop for IPN thread announcement")
 
 def create_sell_order(seller_id, amount, price):
     with get_db() as conn:
@@ -75,7 +101,6 @@ def create_sell_order(seller_id, amount, price):
             c.execute("UPDATE users SET mbtc_balance = mbtc_balance - %s WHERE user_id=%s AND mbtc_balance >= %s", (amount, seller_id, amount))
             if c.rowcount == 0: return False
             c.execute("INSERT INTO market (seller_id, amount, price_per_mbtc, time) VALUES (%s,%s,%s,%s)", (seller_id, amount, price, datetime.now(timezone.utc).isoformat()))
-        conn.commit()
     return True
 
 def buy_from_market(buyer_id, order_id):
@@ -91,27 +116,46 @@ def buy_from_market(buyer_id, order_id):
             c.execute("UPDATE users SET usd_balance = usd_balance + %s WHERE user_id=%s", (seller_gets, seller_id))
             c.execute("UPDATE users SET usd_balance = usd_balance + %s WHERE user_id=%s", (fee, ADMIN_ID))
             c.execute("UPDATE market SET status='SOLD' WHERE id=%s", (order_id,))
-        conn.commit()
     return "SUCCESS - Tokens Delivered!"
 
 async def announce_purchase(context, user_id, amount, method):
     try: user = await context.bot.get_chat(user_id); name = f"@{user.username}" if user.username else user.first_name; await context.bot.send_message(chat_id=CHANNEL_ID, text=f"🎉 NEW BUYER!\n\n{name} bought {amount:.2f} {TOKEN_NAME}\nPayment: {method.upper()}\n\nJoin: https://t.me/{BOT_USERNAME}")
     except Exception as e: logger.error(f"Announce failed: {e}")
 
+def yandex_translate(text, target_lang="en"):
+    if not YANDEX_API_KEY or not YANDEX_FOLDER_ID: return "Yandex not configured"
+    url = "https://translate.api.cloud.yandex.net/translate/v2/translate"
+    headers = {"Authorization": f"Api-Key {YANDEX_API_KEY}"}
+    body = {"targetLanguageCode": target_lang, "texts": [text], "folderId": YANDEX_FOLDER_ID}
+    try: resp = requests.post(url, headers=headers, json=body, timeout=10); resp.raise_for_status(); return resp.json()["translations"][0]["text"]
+    except Exception as e: logger.error(f"YANDEX ERROR: {e}"); return "Translation failed"
+
 def create_nowpay_invoice(price_amount, price_currency, order_id, pay_currency):
     url = "https://api.nowpayments.io/v1/invoice"
     payload = {"price_amount": price_amount, "price_currency": price_currency, "pay_currency": pay_currency, "order_id": order_id, "ipn_callback_url": f"https://{RAILWAY_PUBLIC_DOMAIN}/ipn"}
     headers = {"x-api-key": NOWPAY_API_KEY}
-    try: return requests.post(url, json=payload, headers=headers, timeout=10).json()
+    try: resp = requests.post(url, json=payload, headers=headers, timeout=15); resp.raise_for_status(); return resp.json()
     except Exception as e: logger.error(f"NOWPAY ERROR: {e}"); return {}
 
-@app_flask.route('/ipn', methods=['POST'])
+# ==================== FLASK ROUTES ====================
+@app_flask.route("/ipn", methods=["POST"])
 def ipn():
-    data = request.get_json(); received_hmac = request.headers.get('x-nowpayments-sig'); sorted_data = json.dumps(data, separators=(',', ':'), sort_keys=True); generated_hmac = hashlib.sha512((sorted_data + NOWPAY_IPN_SECRET).encode()).hexdigest()
-    if received_hmac!= generated_hmac: return 'Invalid signature', 400
-    if data.get('payment_status') == 'finished': parts = data.get('order_id').split('_'); user_id = int(parts[-1]); amount = float(parts[-2]); add_balance(user_id, mbtc=amount, usd=amount*PRICE_1, method=data.get('pay_currency'))
-    return 'ok', 200
+    try:
+        raw_body = request.get_data(as_text=True)
+        data = request.get_json(force=True, silent=True) or {}
+        received_hmac = request.headers.get("x-nowpayments-sig", "")
+        generated_hmac = hashlib.sha512((raw_body + NOWPAY_IPN_SECRET).encode()).hexdigest()
+        if not received_hmac or received_hmac!= generated_hmac: return "Invalid signature", 400
+        if data.get("payment_status") == "finished":
+            parts = data.get("order_id", "").split("_")
+            if len(parts) >= 3: add_balance(int(parts[-1]), mbtc=float(parts[-2]), usd=float(parts[-2]) * PRICE_1, method=data.get("pay_currency", "NOWPAY"))
+        return "ok", 200
+    except Exception as e: logger.error(f"IPN error: {e}"); return "error", 500
 
+def run_flask():
+    app_flask.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)), threaded=True)
+
+# ==================== TELEGRAM HANDLERS ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user; referrer = int(context.args[0].replace("ref", "")) if context.args and context.args[0].startswith("ref") else None; add_user(user.id, user.username, referrer)
     await update.message.reply_text(f"🚀 Welcome to {TOKEN_FULL_NAME}\n\nPre-Sale: 1 {TOKEN_NAME} = $0.10\nBulk: 100 for $7\n/buy /market /sell /balance /ref /translate")
@@ -136,25 +180,28 @@ async def buyorder(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE): bal = get_user(update.effective_user.id); await update.message.reply_text(f"💰 Balance:\n{bal[0]:.4f} {TOKEN_NAME}\n${bal[1]:.2f} USD")
 async def ref(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text(f"🔗 Your Link:\nhttps://t.me/{BOT_USERNAME}?start=ref{update.effective_user.id}")
+
 async def translate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2: await update.message.reply_text("Usage: /translate ru Hello"); return
-    await update.message.reply_text(f"🇺🇸 -> {context.args[0].upper()}\n{yandex_translate(' '.join(context.args[1:]), context.args[0])}")
+    translated = await asyncio.to_thread(yandex_translate, " ".join(context.args[1:]), context.args[0])
+    await update.message.reply_text(f"🇺🇸 -> {context.args[0].upper()}\n{translated}")
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     packs = {"buy_1":(1,PRICE_1),"buy_10":(10,PRICE_10),"buy_50":(50,PRICE_50),"buy_100":(100,PRICE_100)}
-    if query.data in packs: amount, price = packs[query.data]; invoice = create_nowpay_invoice(price, "USD", f"mbtc_{amount}_{query.from_user.id}", "ton"); await query.message.reply_text(f"Pay here:\n{invoice.get('invoice_url', 'Error')}")
+    if query.data in packs: amount, price = packs[query.data]; invoice = await asyncio.to_thread(create_nowpay_invoice, price, "USD", f"mbtc_{amount}_{query.from_user.id}", "ton"); await query.message.reply_text(f"Pay here:\n{invoice.get('invoice_url', 'Error')}")
 
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mbtc = (update.message.successful_payment.total_amount / 100) / STARS_PER_MBTC; add_balance(update.message.from_user.id, mbtc=mbtc, usd=mbtc*PRICE_1, method="STARS", context=context); await update.message.reply_text(f"✅ Payment Received!\nYou got: {mbtc:.2f} {TOKEN_NAME}")
 
-def run_flask(): app_flask.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+async def precheckout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.pre_checkout_query.answer(ok=True)
 
+# ==================== MAIN ====================
 def main():
-    init_db(); Thread(target=run_flask, daemon=True).start()
+    init_db(); Thread(target=run_flask, daemon=True).start(); logger.info("Flask IPN server started")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start)); app.add_handler(CommandHandler("buy", buy)); app.add_handler(CommandHandler("market", market)); app.add_handler(CommandHandler("sell", sell)); app.add_handler(CommandHandler("buyorder", buyorder)); app.add_handler(CommandHandler("balance", balance)); app.add_handler(CommandHandler("ref", ref)); app.add_handler(CommandHandler("translate", translate_cmd))
-    app.add_handler(CallbackQueryHandler(callback_handler)); app.add_handler(PreCheckoutQueryHandler(lambda u,c: u.pre_checkout_query.answer(ok=True))); app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
-    print("Bot is running"); app.run_polling(drop_pending_updates=True)
+    app.add_handler(CallbackQueryHandler(callback_handler)); app.add_handler(PreCheckoutQueryHandler(precheckout_handler)); app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    logger.info("Starting bot polling..."); app.run_polling(drop_pending_updates=True, stop_signals=None)
 
 if __name__ == "__main__": main()
